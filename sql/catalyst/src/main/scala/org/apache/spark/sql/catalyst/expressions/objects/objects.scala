@@ -147,10 +147,12 @@ case class StaticInvoke(
       ""
     }
 
+    ctx.addMutableState(javaType, ev.value, s"${ev.value} = ${ctx.defaultValue(dataType)};")
+
     val code = s"""
       $argCode
       boolean ${ev.isNull} = $resultIsNull;
-      final $javaType ${ev.value} = $resultIsNull ? ${ctx.defaultValue(dataType)} : $callFunc;
+      ${ev.value} = $resultIsNull ? ${ctx.defaultValue(dataType)} : $callFunc;
       $postNullCheck
      """
     ev.copy(code = code)
@@ -327,10 +329,12 @@ case class NewInstance(
       s"new $className($argString)"
     }
 
+    ctx.addMutableState(javaType, ev.value, s"${ev.value} = ${ctx.defaultValue(javaType)};")
+
     val code = s"""
       $argCode
       ${outer.map(_.code).getOrElse("")}
-      final $javaType ${ev.value} = ${ev.isNull} ? ${ctx.defaultValue(javaType)} : $constructorCall;
+      ${ev.value} = ${ev.isNull} ? ${ctx.defaultValue(javaType)} : $constructorCall;
     """
     ev.copy(code = code)
   }
@@ -918,7 +922,7 @@ case class InitializeJavaBean(beanInstance: Expression, setters: Map[String, Exp
 
     val code = s"""
       ${instanceGen.code}
-      this.${javaBeanInstance} = ${instanceGen.value};
+      ${javaBeanInstance} = ${instanceGen.value};
       if (!${instanceGen.isNull}) {
         $initializeCode
       }

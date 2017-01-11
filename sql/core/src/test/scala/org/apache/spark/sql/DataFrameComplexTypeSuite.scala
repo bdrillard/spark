@@ -64,6 +64,10 @@ class DataFrameComplexTypeSuite extends QueryTest with SharedSQLContext {
     val ds100_5 = Seq(S100_5()).toDS()
     ds100_5.rdd.count
   }
+
+  test("SPARK-18016 Constant Pool Past Limit for Wide/Nested Dataset") {
+    Seq(S100_5_10()).toDS().count()
+  }
 }
 
 class S100(
@@ -98,4 +102,7 @@ case class S100_5(
   s1: S100 = new S100(), s2: S100 = new S100(), s3: S100 = new S100(),
   s4: S100 = new S100(), s5: S100 = new S100())
 
-
+case class S100_5_10(
+  s1: S100_5 = S100_5(), s2: S100_5 = S100_5(), s3: S100_5 = S100_5(), s4: S100_5 = S100_5(),
+  s5: S100_5 = S100_5(), s6: S100_5 = S100_5(), s7: S100_5 = S100_5(), s8: S100_5 = S100_5(),
+  s9: S100_5 = S100_5(), s10: S100_5 = S100_5())

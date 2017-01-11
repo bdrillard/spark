@@ -110,7 +110,7 @@ class CodegenContext {
     val idx = references.length
     references += obj
     val clsName = Option(className).getOrElse(obj.getClass.getName)
-    addMutableState(clsName, term, s"this.$term = ($clsName) references[$idx];")
+    addMutableState(clsName, term, s"$term = ($clsName) references[$idx];")
     term
   }
 
@@ -200,16 +200,6 @@ class CodegenContext {
   }
 
   /**
-   * Holding all the functions those will be added into generated class.
-   */
-  val addedFunctions: mutable.Map[String, String] =
-    mutable.Map.empty[String, String]
-
-  def addNewFunction(funcName: String, funcCode: String): Unit = {
-    addedFunctions += ((funcName, funcCode))
-  }
-
-  /**
    * Holds expressions that are equivalent. Used to perform subexpression elimination
    * during codegen.
    *
@@ -230,9 +220,122 @@ class CodegenContext {
   // The collection of sub-expression result resetting methods that need to be called on each row.
   val subexprFunctions = mutable.ArrayBuffer.empty[String]
 
-  def declareAddedFunctions(): String = {
-    addedFunctions.map { case (funcName, funcCode) => funcCode }.mkString("\n")
+  /**
+   * The Class and instance names generated. `OuterClass` is a placeholder standing for whatever
+   * class is generated as the outermost class. All other classes and instance names in this list
+   * are private nested classes.
+   */
+  private val classes: mutable.ListBuffer[(String, String)] =
+    mutable.ListBuffer[(String, String)](("OuterClass", null))
+
+  // A map holding the current size in bytes of each class.
+  private val classSize: mutable.Map[String, Int] =
+    mutable.Map[String, Int](("OuterClass", 0))
+
+  // A map holding all functions and their names belonging to each class
+  private val classFunctions: mutable.Map[String, mutable.Map[String, String]] =
+    mutable.Map(("OuterClass", mutable.Map.empty[String, String]))
+
+  // Returns the size of the most recently added class
+  private def currClassSize(): Int = classSize(classes.head._1)
+
+  // Returns the class name of the most recently add class
+  private def currClassName(): String = classes.head._1
+
+  // Returns the instance name of the most recently added class
+  private def currClassInstance(): String = classes.head._2
+
+  // Adds a new class. Requires the class' name, and its instance name
+  private def addClass(className: String, classInstance: String): Unit = {
+    classes.prepend(Tuple2(className, classInstance))
+    classSize += ((className, 0))
+    classFunctions += ((className, mutable.Map.empty[String, String]))
   }
+
+  /**
+   * Adds a function to the generated class. If the code for the `OuterClass` grows too large, the
+   * function will be inlined into a new private nested class, and a class-qualified name for
+   * the function will be returned. Otherwise, the function will be inlined to the `OuterClass`
+   * and the simple `funcName` will be returned.
+   *
+   * @param funcName the class-unqualified name of the function
+   * @param funcCode the body of the function
+   * @param className an optional parameter, if insertion into a particular class is necessary
+   * @return the name of the function, qualified by class if it will be inlined to a private
+   *         nested class
+   */
+  def addNewFunction(
+    funcName: String,
+    funcCode: String,
+    className: Option[String] = None): String = {
+    // The number of named constants that can exist in the class is limited by the Constant Pool
+    // limit, 65536. We cannot know how many constants will be inserted for a class, so we use a
+    // threshold of 1600K bytes to determine when a function should be inlined into a private
+    // NestedClass.
+    val name = className.getOrElse(if (currClassSize > 1600000) {
+      val className = freshName("NestedClass")
+      val classInstance = freshName("nestedClassInstance")
+      addClass(className, classInstance)
+      className
+    } else {
+      currClassName()
+    })
+    val functions = classFunctions(name) += funcName -> funcCode
+    classSize.update(name, classSize(name) + funcCode.length)
+    classFunctions += name -> functions
+    if (currClassName().equals("OuterClass")) {
+      funcName
+    } else {
+      s"${currClassInstance()}.$funcName"
+    }
+  }
+
+  /**
+   * Instantiates all nested private classes as objects to the OuterClass
+   */
+  def initNestedClasses(): String = {
+    // Nested private classes have no mutable state (though they do reference the outer class's
+    // mutable state), so we declare and initialize them inline to the OuterClass
+    classes.map {
+      case (className, classInstance) =>
+        if (className.equals("OuterClass")) {
+          ""
+        } else {
+          s"private $className $classInstance = new $className();"
+        }
+    }.mkString("\n")
+  }
+
+  /**
+   * Declares all functions that should be inlined to the `OuterClass`
+   */
+  def declareAddedFunctions(): String = {
+    classFunctions("OuterClass").map {
+      case (funcName, funcCode) => funcCode
+    }.mkString("\n")
+  }
+
+  /**
+   * Declares all nested private classes and functions that should be inlined to them
+   */
+  def declareNestedClasses(): String = {
+    classFunctions.map {
+      case (className, functions) =>
+        if (className.equals("OuterClass")) {
+          ""
+        } else {
+          val code = functions.map {
+            case (_, funcCode) =>
+              s"$funcCode"
+          }.mkString("\n")
+          s"""
+             |private class $className {
+             |  $code
+             |}
+           """.stripMargin
+        }
+    }
+  }.mkString("\n")
 
   final val JAVA_BOOLEAN = "boolean"
   final val JAVA_BYTE = "byte"
@@ -553,8 +656,7 @@ class CodegenContext {
             return 0;
           }
         """
-      addNewFunction(compareFunc, funcCode)
-      s"this.$compareFunc($c1, $c2)"
+      s"${addNewFunction(compareFunc, funcCode)}($c1, $c2)"
     case schema: StructType =>
       val comparisons = GenerateOrdering.genComparisons(this, schema)
       val compareFunc = freshName("compareStruct")
@@ -570,8 +672,7 @@ class CodegenContext {
             return 0;
           }
         """
-      addNewFunction(compareFunc, funcCode)
-      s"this.$compareFunc($c1, $c2)"
+      s"${addNewFunction(compareFunc, funcCode)}($c1, $c2)"
     case other if other.isInstanceOf[AtomicType] => s"$c1.compare($c2)"
     case udt: UserDefinedType[_] => genComp(udt.sqlType, c1, c2)
     case _ =>
@@ -641,7 +742,9 @@ class CodegenContext {
 
   /**
    * Splits the generated code of expressions into multiple functions, because function has
-   * 64kb code size limit in JVM
+   * 64kb code size limit in JVM. If the class the function is to be inlined to would beyond
+   * 1600kb, a private nested class is declared, and the function is inlined to it, because
+   * classes have a constant pool limit of 65536 named values.
    *
    * @param expressions the codes to evaluate expressions.
    * @param funcName the split function name base.
@@ -685,8 +788,8 @@ class CodegenContext {
            |  ${makeSplitFunction(body)}
            |}
          """.stripMargin
+
         addNewFunction(name, code)
-        name
       }
 
       foldFunctions(functions.map(name => s"$name(${arguments.map(_._2).mkString(", ")})"))
@@ -770,8 +873,6 @@ class CodegenContext {
            |}
            """.stripMargin
 
-      addNewFunction(fnName, fn)
-
       // Add a state and a mapping of the common subexpressions that are associate with this
       // state. Adding this expression to subExprEliminationExprMap means it will call `fn`
       // when it is code generated. This decision should be a cost based one.
@@ -789,7 +890,7 @@ class CodegenContext {
       addMutableState(javaType(expr.dataType), value,
         s"$value = ${defaultValue(expr.dataType)};")
 
-      subexprFunctions += s"$fnName($INPUT_ROW);"
+      subexprFunctions += s"${addNewFunction(fnName, fn)}($INPUT_ROW);"
       val state = SubExprEliminationState(isNull, value)
       e.foreach(subExprEliminationExprs.put(_, state))
     }

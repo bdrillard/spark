@@ -435,7 +435,7 @@ case class SortMergeJoinExec(
          |  }
          |  return false; // unreachable
          |}
-       """.stripMargin)
+       """.stripMargin, Option("OuterClass"))
 
     (leftRow, matches)
   }
