@@ -145,11 +145,54 @@ class CodegenContext {
    *
    * They will be kept as member variables in generated classes like `SpecificProjection`.
    */
-  val mutableStates: mutable.ArrayBuffer[(String, String, String)] =
-    mutable.ArrayBuffer.empty[(String, String, String)]
+  val mutableStateClasses: mutable.ListBuffer[(String, String)] =
+    mutable.ListBuffer[(String, String)]("OuterClass", null)
 
-  def addMutableState(javaType: String, variableName: String, initCode: String): Unit = {
-    mutableStates += ((javaType, variableName, initCode))
+  val mutableStateClassSize: mutable.Map[String, Int] =
+    mutable.Map[String, Int]("OuterClass", 0)
+
+  val mutableStateClassVars: mutable.Map[String, mutable.ListBuffer[(String, String, String)]] =
+    mutable.Map.empty[String, mutable.ListBuffer[(String, String, String)]]
+
+  def currStateClassSize(): Int = mutableStateClassSize(mutableStateClasses.head._1)
+
+  def currStateClassName(): String = mutableStateClasses.head._1
+
+  def currStateClassInstance(): String = mutableStateClasses.head._2
+
+  def addMutableState(javaType: String, variableName: String, initCode: String): String = {
+    if (currStateClassSize() > 40000) {
+      val className = freshName("NestedVariableClass")
+      val classInstance = freshName("nestedVariableClass")
+      val classQualifiedInitCode =
+        initCode.replaceAll(initCode, classInstance + "." + variableName)
+
+      mutableStateClasses.prepend(Tuple2(className, classInstance))
+      mutableStateClassSize += className -> 1
+      mutableStateClassVars += className ->
+        mutable.ListBuffer[(String, String, String)](Tuple3(
+          javaType, variableName, classQualifiedInitCode))
+
+      s"$classInstance.$variableName"
+    } else {
+      val className = currStateClassName()
+      val classInstance = currStateClassInstance()
+
+      mutableStateClassSize.update(className, mutableStateClassSize(className) + 1)
+
+      if (className.equals("OuterClass")) {
+        mutableStateClassVars.update(className, mutableStateClassVars(className) +=
+          Tuple3(javaType, variableName, initCode))
+
+        variableName
+      } else {
+        val classQualifiedInitCode = initCode.replace(initCode, classInstance + "." + variableName)
+        mutableStateClassVars.update(className, mutableStateClassVars(className) +=
+          Tuple3(javaType, variableName, classQualifiedInitCode))
+
+        s"$classInstance.$variableName"
+      }
+    }
   }
 
   /**
@@ -171,7 +214,7 @@ class CodegenContext {
   def declareMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
-    mutableStates.distinct.map { case (javaType, variableName, _) =>
+    mutableStateClassVars("OuterClass").distinct.map { case (javaType, variableName, _) =>
       s"private $javaType $variableName;"
     }.mkString("\n")
   }
@@ -179,11 +222,33 @@ class CodegenContext {
   def initMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
-    val initCodes = mutableStates.distinct.map(_._3 + "\n")
+    val initCodes = mutableStateClassVars.values.flatten.toList.distinct.map(_._3 + "\n")
     // The generated initialization code may exceed 64kb function size limit in JVM if there are too
     // many mutable states, so split it into multiple functions.
     splitExpressions(initCodes, "init", Nil)
   }
+
+  /**
+   * Declares all nested private classes and functions that should be inlined to them
+   */
+  def declareMutableStateClasses(): String = {
+    mutableStateClassVars.map {
+      case (className, variables) =>
+        if (className.equals("OuterClass")) {
+          ""
+        } else {
+          val code = variables.map {
+            case (javaType, variableName, _) =>
+              s"$javaType $variableName;"
+          }.mkString("\n")
+          s"""
+             |private static class $className {
+             |  $code
+             |}
+           """.stripMargin
+        }
+    }
+  }.mkString("\n")
 
   /**
    * Code statements to initialize states that depend on the partition index.
@@ -248,8 +313,8 @@ class CodegenContext {
   // Adds a new class. Requires the class' name, and its instance name
   private def addClass(className: String, classInstance: String): Unit = {
     classes.prepend(Tuple2(className, classInstance))
-    classSize += ((className, 0))
-    classFunctions += ((className, mutable.Map.empty[String, String]))
+    classSize += className -> 0
+    classFunctions += className -> mutable.Map.empty[String, String]
   }
 
   /**
@@ -280,9 +345,8 @@ class CodegenContext {
     } else {
       currClassName()
     })
-    val functions = classFunctions(name) += funcName -> funcCode
     classSize.update(name, classSize(name) + funcCode.length)
-    classFunctions += name -> functions
+    classFunctions.update(name, classFunctions(name) += funcName -> funcCode)
     if (currClassName().equals("OuterClass")) {
       funcName
     } else {
@@ -296,7 +360,7 @@ class CodegenContext {
   def initNestedClasses(): String = {
     // Nested private classes have no mutable state (though they do reference the outer class's
     // mutable state), so we declare and initialize them inline to the OuterClass
-    classes.map {
+    classes ++ mutableStateClasses.map {
       case (className, classInstance) =>
         if (className.equals("OuterClass")) {
           ""
