@@ -110,8 +110,8 @@ class CodegenContext {
     val idx = references.length
     references += obj
     val clsName = Option(className).getOrElse(obj.getClass.getName)
-    addMutableState(clsName, term, s"$term = ($clsName) references[$idx];")
-    term
+    val termAccessor = addMutableState(clsName, term, s"$term = ($clsName) references[$idx];")
+    termAccessor
   }
 
   /**
@@ -146,10 +146,10 @@ class CodegenContext {
    * They will be kept as member variables in generated classes like `SpecificProjection`.
    */
   val mutableStateClasses: mutable.ListBuffer[(String, String)] =
-    mutable.ListBuffer[(String, String)]("OuterClass", null)
+    mutable.ListBuffer[(String, String)](("OuterClass", null))
 
   val mutableStateClassSize: mutable.Map[String, Int] =
-    mutable.Map[String, Int]("OuterClass", 0)
+    mutable.Map[String, Int](("OuterClass", 0))
 
   val mutableStateClassVars: mutable.Map[String, mutable.ListBuffer[(String, String, String)]] =
     mutable.Map.empty[String, mutable.ListBuffer[(String, String, String)]]
@@ -202,13 +202,13 @@ class CodegenContext {
    */
   def addBufferedState(dataType: DataType, variableName: String, initCode: String): ExprCode = {
     val value = freshName(variableName)
-    addMutableState(javaType(dataType), value, "")
+    val valueAccessor = addMutableState(javaType(dataType), value, "")
     val code = dataType match {
-      case StringType => s"$value = $initCode.clone();"
-      case _: StructType | _: ArrayType | _: MapType => s"$value = $initCode.copy();"
-      case _ => s"$value = $initCode;"
+      case StringType => s"$valueAccessor = $initCode.clone();"
+      case _: StructType | _: ArrayType | _: MapType => s"$valueAccessor = $initCode.copy();"
+      case _ => s"$valueAccessor = $initCode;"
     }
-    ExprCode(code, "false", value)
+    ExprCode(code, "false", valueAccessor)
   }
 
   def declareMutableStates(): String = {
@@ -337,7 +337,7 @@ class CodegenContext {
     // limit, 65536. We cannot know how many constants will be inserted for a class, so we use a
     // threshold of 1600K bytes to determine when a function should be inlined into a private
     // NestedClass.
-    val name = className.getOrElse(if (currClassSize > 1600000) {
+    val name = className.getOrElse(if (currClassSize > 600000) {
       val className = freshName("NestedClass")
       val classInstance = freshName("nestedClassInstance")
       addClass(className, classInstance)
@@ -360,7 +360,7 @@ class CodegenContext {
   def initNestedClasses(): String = {
     // Nested private classes have no mutable state (though they do reference the outer class's
     // mutable state), so we declare and initialize them inline to the OuterClass
-    classes ++ mutableStateClasses.map {
+    (classes ++ mutableStateClasses).map {
       case (className, classInstance) =>
         if (className.equals("OuterClass")) {
           ""
@@ -926,17 +926,6 @@ class CodegenContext {
       val isNull = s"${fnName}IsNull"
       val value = s"${fnName}Value"
 
-      // Generate the code for this expression tree and wrap it in a function.
-      val eval = expr.genCode(this)
-      val fn =
-        s"""
-           |private void $fnName(InternalRow $INPUT_ROW) {
-           |  ${eval.code.trim}
-           |  $isNull = ${eval.isNull};
-           |  $value = ${eval.value};
-           |}
-           """.stripMargin
-
       // Add a state and a mapping of the common subexpressions that are associate with this
       // state. Adding this expression to subExprEliminationExprMap means it will call `fn`
       // when it is code generated. This decision should be a cost based one.
@@ -950,12 +939,23 @@ class CodegenContext {
       //   2. Less code.
       // Currently, we will do this for all non-leaf only expression trees (i.e. expr trees with
       // at least two nodes) as the cost of doing it is expected to be low.
-      addMutableState("boolean", isNull, s"$isNull = false;")
-      addMutableState(javaType(expr.dataType), value,
+      val isNullAccessor = addMutableState("boolean", isNull, s"$isNull = false;")
+      val valueAccessor = addMutableState(javaType(expr.dataType), value,
         s"$value = ${defaultValue(expr.dataType)};")
 
+      // Generate the code for this expression tree and wrap it in a function.
+      val eval = expr.genCode(this)
+      val fn =
+        s"""
+           |private void $fnName(InternalRow $INPUT_ROW) {
+           |  ${eval.code.trim}
+           |  $isNullAccessor = ${eval.isNull};
+           |  $valueAccessor = ${eval.value};
+           |}
+           """.stripMargin
+
       subexprFunctions += s"${addNewFunction(fnName, fn)}($INPUT_ROW);"
-      val state = SubExprEliminationState(isNull, value)
+      val state = SubExprEliminationState(isNullAccessor, valueAccessor)
       e.foreach(subExprEliminationExprs.put(_, state))
     }
   }

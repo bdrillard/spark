@@ -63,21 +63,21 @@ object GenerateMutableProjection extends CodeGenerator[Seq[Expression], MutableP
         if (e.nullable) {
           val isNull = s"isNull_$i"
           val value = s"value_$i"
-          ctx.addMutableState("boolean", isNull, s"$isNull = true;")
-          ctx.addMutableState(ctx.javaType(e.dataType), value,
+          val isNullAccessor = ctx.addMutableState("boolean", isNull, s"$isNull = true;")
+          val valueAccessor = ctx.addMutableState(ctx.javaType(e.dataType), value,
             s"$value = ${ctx.defaultValue(e.dataType)};")
           s"""
             ${ev.code}
-            $isNull = ${ev.isNull};
-            $value = ${ev.value};
+            $isNullAccessor = ${ev.isNull};
+            $valueAccessor = ${ev.value};
            """
         } else {
           val value = s"value_$i"
-          ctx.addMutableState(ctx.javaType(e.dataType), value,
+          val valueAccessor = ctx.addMutableState(ctx.javaType(e.dataType), value,
             s"$value = ${ctx.defaultValue(e.dataType)};")
           s"""
             ${ev.code}
-            $value = ${ev.value};
+            $valueAccessor = ${ev.value};
            """
         }
     }
