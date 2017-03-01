@@ -156,7 +156,7 @@ case class StaticInvoke(
       $valueAccessor = $resultIsNull ? ${ctx.defaultValue(dataType)} : $callFunc;
       $postNullCheck
      """
-    ev.copy(code = code)
+    ev.copy(code = code, value = valueAccessor)
   }
 }
 

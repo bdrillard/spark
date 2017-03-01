@@ -101,8 +101,8 @@ case class BroadcastHashJoinExec(
     val clsName = broadcastRelation.value.getClass.getName
     val relationTermAccessor = ctx.addMutableState(clsName, relationTerm,
       s"""
-         | $relationTermAccessor = (($clsName) $broadcast.value()).asReadOnlyCopy();
-         | incPeakExecutionMemory($relationTermAccessor.estimatedSize());
+         | $relationTerm = (($clsName) $broadcast.value()).asReadOnlyCopy();
+         | incPeakExecutionMemory($relationTerm.estimatedSize());
        """.stripMargin)
     (broadcastRelation, relationTermAccessor)
   }

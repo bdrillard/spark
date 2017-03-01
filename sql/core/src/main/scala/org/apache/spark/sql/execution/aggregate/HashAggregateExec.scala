@@ -603,7 +603,8 @@ case class HashAggregateExec(
           ${if (isFastHashMapEnabled) {
               s"$iterTermForFastHashMapAccessor = $fastHashMapTerm.rowIterator();"} else ""}
 
-          $iterTermAccessor = $thisPlan.finishAggregate($hashMapTerm, $sorterTerm, $peakMemory, $spillSize);
+          $iterTermAccessor = $thisPlan.finishAggregate(
+            $hashMapTerm, $sorterTerm, $peakMemory, $spillSize);
         }
        """)
 

@@ -187,6 +187,8 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
 
         ${ctx.initNestedClasses()}
         ${ctx.declareNestedClasses()}
+
+        ${ctx.initMutableStateClasses()}
         ${ctx.declareMutableStateClasses()}
       }
     """

@@ -152,7 +152,8 @@ class CodegenContext {
     mutable.Map[String, Int](("OuterClass", 0))
 
   val mutableStateClassVars: mutable.Map[String, mutable.ListBuffer[(String, String, String)]] =
-    mutable.Map.empty[String, mutable.ListBuffer[(String, String, String)]]
+    mutable.Map[String, mutable.ListBuffer[(String, String, String)]](("OuterClass",
+      mutable.ListBuffer.empty[(String, String, String)]))
 
   def currStateClassSize(): Int = mutableStateClassSize(mutableStateClasses.head._1)
 
@@ -165,7 +166,7 @@ class CodegenContext {
       val className = freshName("NestedVariableClass")
       val classInstance = freshName("nestedVariableClass")
       val classQualifiedInitCode =
-        initCode.replaceAll(initCode, classInstance + "." + variableName)
+        initCode.replaceAll(variableName, classInstance + "." + variableName)
 
       mutableStateClasses.prepend(Tuple2(className, classInstance))
       mutableStateClassSize += className -> 1
@@ -186,7 +187,8 @@ class CodegenContext {
 
         variableName
       } else {
-        val classQualifiedInitCode = initCode.replace(initCode, classInstance + "." + variableName)
+        val classQualifiedInitCode = initCode.replaceAll(
+          variableName, classInstance + "." + variableName)
         mutableStateClassVars.update(className, mutableStateClassVars(className) +=
           Tuple3(javaType, variableName, classQualifiedInitCode))
 
@@ -226,6 +228,22 @@ class CodegenContext {
     // The generated initialization code may exceed 64kb function size limit in JVM if there are too
     // many mutable states, so split it into multiple functions.
     splitExpressions(initCodes, "init", Nil)
+  }
+
+  /**
+   * Instantiates all nested private classes as objects to the OuterClass
+   */
+  def initMutableStateClasses(): String = {
+    // Nested private classes have no mutable state (though they do reference the outer class's
+    // mutable state), so we declare and initialize them inline to the OuterClass
+    mutableStateClasses.map {
+      case (className, classInstance) =>
+        if (className.equals("OuterClass")) {
+          ""
+        } else {
+          s"private static $className $classInstance = new $className();"
+        }
+    }.mkString("\n")
   }
 
   /**
@@ -337,7 +355,7 @@ class CodegenContext {
     // limit, 65536. We cannot know how many constants will be inserted for a class, so we use a
     // threshold of 1600K bytes to determine when a function should be inlined into a private
     // NestedClass.
-    val name = className.getOrElse(if (currClassSize > 600000) {
+    val name = className.getOrElse(if (currClassSize > 400000) {
       val className = freshName("NestedClass")
       val classInstance = freshName("nestedClassInstance")
       addClass(className, classInstance)
@@ -360,7 +378,7 @@ class CodegenContext {
   def initNestedClasses(): String = {
     // Nested private classes have no mutable state (though they do reference the outer class's
     // mutable state), so we declare and initialize them inline to the OuterClass
-    (classes ++ mutableStateClasses).map {
+    classes.map {
       case (className, classInstance) =>
         if (className.equals("OuterClass")) {
           ""

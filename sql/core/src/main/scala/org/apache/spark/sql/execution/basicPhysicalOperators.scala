@@ -312,8 +312,8 @@ case class SampleExec(
       val samplerClass = classOf[BernoulliCellSampler[UnsafeRow]].getName
       val samplerAccessor = ctx.addMutableState(s"$samplerClass<UnsafeRow>", sampler,
         s"""
-          | $samplerAccessor = new $samplerClass<UnsafeRow>($lowerBound, $upperBound, false);
-          | $samplerAccessor.setSeed(${seed}L + partitionIndex);
+          | $sampler = new $samplerClass<UnsafeRow>($lowerBound, $upperBound, false);
+          | $sampler.setSeed(${seed}L + partitionIndex);
          """.stripMargin.trim)
 
       s"""

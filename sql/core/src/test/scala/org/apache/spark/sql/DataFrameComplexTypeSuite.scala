@@ -20,6 +20,7 @@ package org.apache.spark.sql
 import org.apache.spark.sql.catalyst.DefinedByConstructorParams
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.test.SharedSQLContext
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
 
 /**
  * A test suite to test DataFrame/SQL functionalities with complex types (i.e. array, struct, map).
@@ -66,7 +67,20 @@ class DataFrameComplexTypeSuite extends QueryTest with SharedSQLContext {
   }
 
   test("SPARK-18016 Constant Pool Past Limit for Wide/Nested Dataset") {
-    Seq(S100_5_10()).toDS().count()
+    val schema = StructType(
+      (0 to 8000).map(n ⇒ StructField(s"column_$n", StringType))
+    )
+
+    val values = schema.map(_ ⇒ null)
+    val rows = spark.sparkContext.parallelize(Seq(Row(values:_*)))
+    val frame = spark.sqlContext.createDataFrame(rows, schema)
+
+    frame
+      .write
+      .format("parquet")
+      .save("/tmp/test")
+
+//    Seq(S100_5_10()).toDS().count()
   }
 }
 
