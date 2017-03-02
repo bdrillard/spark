@@ -75,10 +75,11 @@ class DataFrameComplexTypeSuite extends QueryTest with SharedSQLContext {
     val rows = spark.sparkContext.parallelize(Seq(Row(values:_*)))
     val frame = spark.sqlContext.createDataFrame(rows, schema)
 
-    frame
-      .write
-      .format("parquet")
-      .save("/tmp/test")
+    frame.show()
+//      .write
+//      .mode(SaveMode.Overwrite)
+//      .format("parquet")
+//      .save("/tmp/test")
 
 //    Seq(S100_5_10()).toDS().count()
   }

@@ -162,7 +162,7 @@ class CodegenContext {
   def currStateClassInstance(): String = mutableStateClasses.head._2
 
   def addMutableState(javaType: String, variableName: String, initCode: String): String = {
-    if (currStateClassSize() > 40000) {
+    if (currStateClassSize() > 30000) {
       val className = freshName("NestedVariableClass")
       val classInstance = freshName("nestedVariableClass")
       val classQualifiedInitCode =
@@ -322,11 +322,7 @@ class CodegenContext {
   // Returns the size of the most recently added class
   private def currClassSize(): Int = classSize(classes.head._1)
 
-  // Returns the class name of the most recently add class
-  private def currClassName(): String = classes.head._1
-
-  // Returns the instance name of the most recently added class
-  private def currClassInstance(): String = classes.head._2
+  private def currClass(): (String, String) = classes.head
 
   // Adds a new class. Requires the class' name, and its instance name
   private def addClass(className: String, classInstance: String): Unit = {
@@ -343,32 +339,39 @@ class CodegenContext {
    *
    * @param funcName the class-unqualified name of the function
    * @param funcCode the body of the function
-   * @param className an optional parameter, if insertion into a particular class is necessary
    * @return the name of the function, qualified by class if it will be inlined to a private
    *         nested class
    */
   def addNewFunction(
     funcName: String,
     funcCode: String,
-    className: Option[String] = None): String = {
+    inlineToOuterClass: Boolean = false): String = {
     // The number of named constants that can exist in the class is limited by the Constant Pool
     // limit, 65536. We cannot know how many constants will be inserted for a class, so we use a
-    // threshold of 1600K bytes to determine when a function should be inlined into a private
+    // threshold of 1000K bytes to determine when a function should be inlined into a private
     // NestedClass.
-    val name = className.getOrElse(if (currClassSize > 400000) {
+    val classInfo = if (inlineToOuterClass) {
+      ("OuterClass", "")
+    } else if (currClassSize > 1000000) {
       val className = freshName("NestedClass")
       val classInstance = freshName("nestedClassInstance")
+
       addClass(className, classInstance)
-      className
+
+      Tuple2(className, classInstance)
     } else {
-      currClassName()
-    })
+      currClass()
+    }
+    val name = classInfo._1
+
     classSize.update(name, classSize(name) + funcCode.length)
     classFunctions.update(name, classFunctions(name) += funcName -> funcCode)
-    if (currClassName().equals("OuterClass")) {
+    if (name.equals("OuterClass")) {
       funcName
     } else {
-      s"${currClassInstance()}.$funcName"
+      val classInstance = classInfo._2
+
+      s"$classInstance.$funcName"
     }
   }
 
