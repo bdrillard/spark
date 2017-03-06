@@ -19,6 +19,7 @@ package org.apache.spark.sql.catalyst.expressions.objects
 
 import java.lang.reflect.Modifier
 
+import scala.collection.mutable
 import scala.language.existentials
 import scala.reflect.ClassTag
 
@@ -417,17 +418,23 @@ case class WrapOption(child: Expression, optType: DataType)
 case class LambdaVariable(
     value: String,
     isNull: String,
+    loopValuesMap: mutable.Map[String, String],
     dataType: DataType,
     nullable: Boolean = true) extends LeafExpression
   with Unevaluable with NonSQLExpression {
 
   override def genCode(ctx: CodegenContext): ExprCode = {
-    ExprCode(code = "", value = value, isNull = if (nullable) isNull else "false")
+    val valueAccessor = loopValuesMap.getOrElseUpdate(value,
+      ctx.addMutableState(ctx.javaType(dataType), value, ""))
+    val isNullAccessor = loopValuesMap.getOrElseUpdate(isNull,
+      ctx.addMutableState("boolean", isNull, ""))
+    ExprCode(code = "", value = valueAccessor, isNull = if (nullable) isNullAccessor else "false")
   }
 }
 
 object MapObjects {
   private val curId = new java.util.concurrent.atomic.AtomicInteger()
+  private val loopValuesMap: mutable.Map[String, String] = mutable.Map.empty[String, String]
 
   /**
    * Construct an instance of MapObjects case class.
@@ -442,8 +449,8 @@ object MapObjects {
       elementType: DataType): MapObjects = {
     val loopValue = "MapObjects_loopValue" + curId.getAndIncrement()
     val loopIsNull = "MapObjects_loopIsNull" + curId.getAndIncrement()
-    val loopVar = LambdaVariable(loopValue, loopIsNull, elementType)
-    MapObjects(loopValue, loopIsNull, elementType, function(loopVar), inputData)
+    val loopVar = LambdaVariable(loopValue, loopIsNull, loopValuesMap, elementType)
+    MapObjects(loopValue, loopIsNull, elementType, function(loopVar), inputData)(loopValuesMap)
   }
 }
 
@@ -464,13 +471,16 @@ object MapObjects {
  * @param lambdaFunction A function that take the `loopVar` as input, and used as lambda function
  *                       to handle collection elements.
  * @param inputData An expression that when evaluated returns a collection object.
+ * @param loopValuesMap
  */
 case class MapObjects private(
     loopValue: String,
     loopIsNull: String,
     loopVarDataType: DataType,
     lambdaFunction: Expression,
-    inputData: Expression) extends Expression with NonSQLExpression {
+    inputData: Expression)
+    (loopValuesMap: mutable.Map[String, String] = mutable.Map.empty[String, String])
+  extends Expression with NonSQLExpression {
 
   override def nullable: Boolean = inputData.nullable
 
@@ -482,10 +492,14 @@ case class MapObjects private(
   override def dataType: DataType =
     ArrayType(lambdaFunction.dataType, containsNull = lambdaFunction.nullable)
 
+  override protected def otherCopyArgs: Seq[AnyRef] = loopValuesMap :: Nil
+
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val elementJavaType = ctx.javaType(loopVarDataType)
-    val loopIsNullAccessor = ctx.addMutableState("boolean", loopIsNull, "")
-    val loopValueAccessor = ctx.addMutableState(elementJavaType, loopValue, "")
+    val loopIsNullAccessor = loopValuesMap.getOrElseUpdate(loopIsNull,
+      ctx.addMutableState("boolean", loopIsNull, ""))
+    val loopValueAccessor = loopValuesMap.getOrElseUpdate(loopValue,
+      ctx.addMutableState(elementJavaType, loopValue, ""))
     val genInputData = inputData.genCode(ctx)
     val genFunction = lambdaFunction.genCode(ctx)
     val dataLength = ctx.freshName("dataLength")
@@ -609,15 +623,18 @@ object ExternalMapToCatalyst {
     val keyName = "ExternalMapToCatalyst_key" + id
     val valueName = "ExternalMapToCatalyst_value" + id
     val valueIsNull = "ExternalMapToCatalyst_value_isNull" + id
+    val mapValuesMap: mutable.Map[String, String] = mutable.Map.empty[String, String]
 
     ExternalMapToCatalyst(
       keyName,
       keyType,
-      keyConverter(LambdaVariable(keyName, "false", keyType, false)),
+      keyConverter(
+        LambdaVariable(keyName, "false", mapValuesMap, keyType, false)),
       valueName,
       valueIsNull,
       valueType,
-      valueConverter(LambdaVariable(valueName, valueIsNull, valueType, valueNullable)),
+      valueConverter(
+        LambdaVariable(valueName, valueIsNull, mapValuesMap, valueType, valueNullable)),
       inputMap
     )
   }

@@ -145,55 +145,66 @@ class CodegenContext {
    *
    * They will be kept as member variables in generated classes like `SpecificProjection`.
    */
-  val mutableStateClasses: mutable.ListBuffer[(String, String)] =
-    mutable.ListBuffer[(String, String)](("OuterClass", null))
+  val mutableState: mutable.ListBuffer[(String, String, String)] =
+    mutable.ListBuffer.empty[(String, String, String)]
 
-  val mutableStateClassSize: mutable.Map[String, Int] =
-    mutable.Map[String, Int](("OuterClass", 0))
+  var mutableStateCount: Int = 0
 
-  val mutableStateClassVars: mutable.Map[String, mutable.ListBuffer[(String, String, String)]] =
-    mutable.Map[String, mutable.ListBuffer[(String, String, String)]](("OuterClass",
-      mutable.ListBuffer.empty[(String, String, String)]))
+  var mutableStateArrayIdx: mutable.Map[(String, String), Int] =
+    mutable.Map.empty[(String, String), Int]
 
-  def currStateClassSize(): Int = mutableStateClassSize(mutableStateClasses.head._1)
+  var mutableStateArrayNames: mutable.Map[(String, String), String] =
+    mutable.Map.empty[(String, String), String]
 
-  def currStateClassName(): String = mutableStateClasses.head._1
+  var mutableStateArrayInitCodes: mutable.Map[(String, String), String] =
+    mutable.Map.empty[(String, String), String]
 
-  def currStateClassInstance(): String = mutableStateClasses.head._2
-
+  /**
+   * Adds an instance of globally-accessible mutable state. Mutable state may either be inlined
+   * as a private member variable to the class, or it may be compacted into arrays of the same
+   * type and initialization if the amount of mutable state would grow past 10k, in order to avoid
+   * Constant Pool limit errors for both state declaration and initialization.
+   *
+   * We compact state into arrays when we can anticipate variables of the same type and initCode
+   * may appear numerous times. Variable names with integer suffixes (as given by the `freshName`
+   * function), that are either simply assigned (null or no initialization) or are primitive are
+   * good candidates for array compaction, as these variables types are likely to appear numerous
+   * times, and can be easily initialized in loops.
+   *
+   * @param javaType the javaType
+   * @param variableName the variable name
+   * @param initCode the initialization code for the variable
+   * @return the name of the mutable state variable, which is either the original name if the
+   *         variable is inlined to the class, or an array access if the variable is to be stored
+   *         in an array of variables of the same type and initialization.
+   */
   def addMutableState(javaType: String, variableName: String, initCode: String): String = {
-    if (currStateClassSize() > 30000) {
-      val className = freshName("NestedVariableClass")
-      val classInstance = freshName("nestedVariableClass")
-      val classQualifiedInitCode =
-        initCode.replaceAll(variableName, classInstance + "." + variableName)
+    if (mutableStateCount > 10000 && variableName.matches(".*\\d+.*") &&
+      (initCode.matches("(^.*\\s*=\\s*null;$|^$)") || isPrimitiveType(javaType))) {
+      val initCodeKey = initCode.replaceAll(variableName, "*VALUE*")
+      if (mutableStateArrayIdx.contains((javaType, initCodeKey))) {
+        val arrayName = mutableStateArrayNames((javaType, initCodeKey))
+        val idx = mutableStateArrayIdx((javaType, initCodeKey)) + 1
 
-      mutableStateClasses.prepend(Tuple2(className, classInstance))
-      mutableStateClassSize += className -> 1
-      mutableStateClassVars += className ->
-        mutable.ListBuffer[(String, String, String)](Tuple3(
-          javaType, variableName, classQualifiedInitCode))
+        mutableStateArrayIdx.update(
+          (javaType, initCodeKey),
+          mutableStateArrayIdx(javaType, initCodeKey) + 1)
 
-      s"$classInstance.$variableName"
-    } else {
-      val className = currStateClassName()
-      val classInstance = currStateClassInstance()
-
-      mutableStateClassSize.update(className, mutableStateClassSize(className) + 1)
-
-      if (className.equals("OuterClass")) {
-        mutableStateClassVars.update(className, mutableStateClassVars(className) +=
-          Tuple3(javaType, variableName, initCode))
-
-        variableName
+        s"$arrayName[$idx]"
       } else {
-        val classQualifiedInitCode = initCode.replaceAll(
-          variableName, classInstance + "." + variableName)
-        mutableStateClassVars.update(className, mutableStateClassVars(className) +=
-          Tuple3(javaType, variableName, classQualifiedInitCode))
+        val arrayName = freshName("mutableStateArray")
+        val qualifiedInitCode = initCode.replaceAll(variableName, s"$arrayName[i]")
+        mutableStateArrayNames += Tuple2(javaType, initCodeKey) -> arrayName
+        mutableStateArrayIdx += Tuple2(javaType, initCodeKey) -> 0
+        mutableStateArrayInitCodes += Tuple2(javaType, initCodeKey) -> qualifiedInitCode
 
-        s"$classInstance.$variableName"
+        s"$arrayName[0]"
       }
+    } else {
+      mutableStateCount += 1
+      mutableState += Tuple3(javaType, variableName, initCode)
+
+      variableName
     }
   }
 
@@ -216,57 +227,43 @@ class CodegenContext {
   def declareMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
-    mutableStateClassVars("OuterClass").distinct.map { case (javaType, variableName, _) =>
+    val inlinedStates = mutableState.distinct.map { case (javaType, variableName, _) =>
       s"private $javaType $variableName;"
-    }.mkString("\n")
+    }
+    val arrayStates = mutableStateArrayNames.map { case ((javaType, initCode), arrayName) =>
+      val length = mutableStateArrayIdx((javaType, initCode)) + 1
+      if (javaType.matches("^.*\\[\\]$")) {
+        val baseType = javaType.substring(0, javaType.length - 2)
+        s"private $javaType[] $arrayName = new $baseType[$length][];"
+      } else {
+        s"private $javaType[] $arrayName = new $javaType[$length];"
+      }
+    }
+
+    (inlinedStates ++ arrayStates).mkString("\n")
   }
 
   def initMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
-    val initCodes = mutableStateClassVars.values.flatten.toList.distinct.map(_._3 + "\n")
+    val initCodes = mutableState.distinct.map(_._3 + "\n")
+    // Array state is initialized in loops
+    val arrayInitCodes = mutableStateArrayNames.map { case ((javaType, initCode), arrayName) =>
+      val qualifiedInitCode = mutableStateArrayInitCodes((javaType, initCode))
+      if (qualifiedInitCode.equals("")) {
+        ""
+      } else {
+        s"""
+           for (int i = 0; i < $arrayName.length; i++) {
+             $qualifiedInitCode
+           }
+         """
+      }
+    }
     // The generated initialization code may exceed 64kb function size limit in JVM if there are too
     // many mutable states, so split it into multiple functions.
-    splitExpressions(initCodes, "init", Nil)
+    splitExpressions(initCodes ++ arrayInitCodes, "init", Nil)
   }
-
-  /**
-   * Instantiates all nested private classes as objects to the OuterClass
-   */
-  def initMutableStateClasses(): String = {
-    // Nested private classes have no mutable state (though they do reference the outer class's
-    // mutable state), so we declare and initialize them inline to the OuterClass
-    mutableStateClasses.map {
-      case (className, classInstance) =>
-        if (className.equals("OuterClass")) {
-          ""
-        } else {
-          s"private static $className $classInstance = new $className();"
-        }
-    }.mkString("\n")
-  }
-
-  /**
-   * Declares all nested private classes and functions that should be inlined to them
-   */
-  def declareMutableStateClasses(): String = {
-    mutableStateClassVars.map {
-      case (className, variables) =>
-        if (className.equals("OuterClass")) {
-          ""
-        } else {
-          val code = variables.map {
-            case (javaType, variableName, _) =>
-              s"$javaType $variableName;"
-          }.mkString("\n")
-          s"""
-             |private static class $className {
-             |  $code
-             |}
-           """.stripMargin
-        }
-    }
-  }.mkString("\n")
 
   /**
    * Code statements to initialize states that depend on the partition index.
@@ -352,7 +349,7 @@ class CodegenContext {
     // NestedClass.
     val classInfo = if (inlineToOuterClass) {
       ("OuterClass", "")
-    } else if (currClassSize > 1000000) {
+    } else if (currClassSize > 1600000) {
       val className = freshName("NestedClass")
       val classInstance = freshName("nestedClassInstance")
 

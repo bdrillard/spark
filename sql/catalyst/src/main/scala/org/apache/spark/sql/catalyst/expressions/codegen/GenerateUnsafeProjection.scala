@@ -405,9 +405,6 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
 
         ${ctx.initNestedClasses()}
         ${ctx.declareNestedClasses()}
-
-        ${ctx.initMutableStateClasses()}
-        ${ctx.declareMutableStateClasses()}
       }
       """
 

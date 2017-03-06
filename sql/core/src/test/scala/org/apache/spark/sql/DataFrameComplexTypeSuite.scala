@@ -68,7 +68,7 @@ class DataFrameComplexTypeSuite extends QueryTest with SharedSQLContext {
 
   test("SPARK-18016 Constant Pool Past Limit for Wide/Nested Dataset") {
     val schema = StructType(
-      (0 to 8000).map(n ⇒ StructField(s"column_$n", StringType))
+      (0 to 10000).map(n ⇒ StructField(s"column_$n", StringType))
     )
 
     val values = schema.map(_ ⇒ null)
