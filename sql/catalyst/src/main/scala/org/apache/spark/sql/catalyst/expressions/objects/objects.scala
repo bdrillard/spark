@@ -434,6 +434,10 @@ case class LambdaVariable(
 
 object MapObjects {
   private val curId = new java.util.concurrent.atomic.AtomicInteger()
+  // Since the loopValue and loopIsNull mutable state may be compacted into an array of their
+  // corresponding types, we keep a map between the variable name and its accessor, which is
+  // either the same name, or an array-access, such that state may be properly assigned between
+  // the lambdaFunction and the body of `MapObjects`
   private val loopValuesMap: mutable.Map[String, String] = mutable.Map.empty[String, String]
 
   /**
@@ -471,7 +475,8 @@ object MapObjects {
  * @param lambdaFunction A function that take the `loopVar` as input, and used as lambda function
  *                       to handle collection elements.
  * @param inputData An expression that when evaluated returns a collection object.
- * @param loopValuesMap
+ * @param loopValuesMap a map holding the name or array-accessor for the mutable state of loopValue
+ *                      and loopIsNull variables.
  */
 case class MapObjects private(
     loopValue: String,
