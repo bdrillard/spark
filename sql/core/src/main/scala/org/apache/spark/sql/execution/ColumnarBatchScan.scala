@@ -88,9 +88,11 @@ private[sql] trait ColumnarBatchScan extends CodegenSupport {
     val columnVectorClz = "org.apache.spark.sql.execution.vectorized.ColumnVector"
     val idx = ctx.freshName("batchIdx")
     val idxAccessor = ctx.addMutableState("int", idx, s"$idx = 0;")
-    val colVars = output.indices.map(i => ctx.freshName("colInstance" + i))
-    val columnAssigns = colVars.zipWithIndex.map { case (name, i) =>
-      val nameAccessor = ctx.addMutableState(columnVectorClz, name, s"$name = null;")
+    val colVars = output.indices.map(i => {
+      val name = ctx.freshName("colInstance" + i)
+      ctx.addMutableState(columnVectorClz, name, s"$name = null;")
+    })
+    val columnAssigns = colVars.zipWithIndex.map { case (nameAccessor, i) =>
       s"$nameAccessor = $batchAccessor.column($i);"
     }
 

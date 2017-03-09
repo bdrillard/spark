@@ -178,8 +178,12 @@ class CodegenContext {
    *         variable is inlined to the class, or an array access if the variable is to be stored
    *         in an array of variables of the same type and initialization.
    */
-  def addMutableState(javaType: String, variableName: String, initCode: String): String = {
-    if (mutableStateCount > 10000 && variableName.matches(".*\\d+.*") &&
+  def addMutableState(
+    javaType: String,
+    variableName: String,
+    initCode: String,
+    inLine: Boolean = false): String = {
+    if (!inLine && variableName.matches(".*\\d+.*") &&
       (initCode.matches("(^.*\\s*=\\s*null;$|^$)") || isPrimitiveType(javaType))) {
       val initCodeKey = initCode.replaceAll(variableName, "*VALUE*")
       if (mutableStateArrayIdx.contains((javaType, initCodeKey))) {

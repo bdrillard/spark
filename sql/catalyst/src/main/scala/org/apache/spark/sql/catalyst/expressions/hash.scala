@@ -268,17 +268,17 @@ abstract class HashExpression[E] extends Expression {
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     ev.isNull = "false"
+    val valueAccessor = ctx.addMutableState(ctx.javaType(dataType), ev.value, "")
     val childrenHash = ctx.splitExpressions(ctx.INPUT_ROW, children.map { child =>
       val childGen = child.genCode(ctx)
       childGen.code + ctx.nullSafeExec(child.nullable, childGen.isNull) {
-        computeHash(childGen.value, child.dataType, ev.value, ctx)
+        computeHash(childGen.value, child.dataType, valueAccessor, ctx)
       }
     })
 
-    val valueAccessor = ctx.addMutableState(ctx.javaType(dataType), ev.value, "")
     ev.copy(code = s"""
       $valueAccessor = $seed;
-      $childrenHash""")
+      $childrenHash""", value = valueAccessor)
   }
 
   protected def nullSafeElementHash(
@@ -612,7 +612,7 @@ case class HiveHash(children: Seq[Expression]) extends HashExpression[Int] {
 
     ev.copy(code = s"""
       $valueAccessor = $seed;
-      $childrenHash""")
+      $childrenHash""", value = valueAccessor)
   }
 
   override def eval(input: InternalRow = null): Int = {

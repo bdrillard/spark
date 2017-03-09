@@ -339,7 +339,7 @@ case class NewInstance(
       ${outer.map(_.code).getOrElse("")}
       $valueAccessor = ${ev.isNull} ? ${ctx.defaultValue(javaType)} : $constructorCall;
     """
-    ev.copy(code = code)
+    ev.copy(code = code, value = valueAccessor)
   }
 
   override def toString: String = s"newInstance($cls)"
@@ -418,27 +418,17 @@ case class WrapOption(child: Expression, optType: DataType)
 case class LambdaVariable(
     value: String,
     isNull: String,
-    loopValuesMap: mutable.Map[String, String],
     dataType: DataType,
     nullable: Boolean = true) extends LeafExpression
   with Unevaluable with NonSQLExpression {
 
   override def genCode(ctx: CodegenContext): ExprCode = {
-    val valueAccessor = loopValuesMap.getOrElseUpdate(value,
-      ctx.addMutableState(ctx.javaType(dataType), value, ""))
-    val isNullAccessor = loopValuesMap.getOrElseUpdate(isNull,
-      ctx.addMutableState("boolean", isNull, ""))
-    ExprCode(code = "", value = valueAccessor, isNull = if (nullable) isNullAccessor else "false")
+    ExprCode(code = "", value = value, isNull = if (nullable) isNull else "false")
   }
 }
 
 object MapObjects {
   private val curId = new java.util.concurrent.atomic.AtomicInteger()
-  // Since the loopValue and loopIsNull mutable state may be compacted into an array of their
-  // corresponding types, we keep a map between the variable name and its accessor, which is
-  // either the same name, or an array-access, such that state may be properly assigned between
-  // the lambdaFunction and the body of `MapObjects`
-  private val loopValuesMap: mutable.Map[String, String] = mutable.Map.empty[String, String]
 
   /**
    * Construct an instance of MapObjects case class.
@@ -453,8 +443,8 @@ object MapObjects {
       elementType: DataType): MapObjects = {
     val loopValue = "MapObjects_loopValue" + curId.getAndIncrement()
     val loopIsNull = "MapObjects_loopIsNull" + curId.getAndIncrement()
-    val loopVar = LambdaVariable(loopValue, loopIsNull, loopValuesMap, elementType)
-    MapObjects(loopValue, loopIsNull, elementType, function(loopVar), inputData)(loopValuesMap)
+    val loopVar = LambdaVariable(loopValue, loopIsNull, elementType)
+    MapObjects(loopValue, loopIsNull, elementType, function(loopVar), inputData)
   }
 }
 
@@ -475,8 +465,6 @@ object MapObjects {
  * @param lambdaFunction A function that take the `loopVar` as input, and used as lambda function
  *                       to handle collection elements.
  * @param inputData An expression that when evaluated returns a collection object.
- * @param loopValuesMap a map holding the name or array-accessor for the mutable state of loopValue
- *                      and loopIsNull variables.
  */
 case class MapObjects private(
     loopValue: String,
@@ -484,7 +472,6 @@ case class MapObjects private(
     loopVarDataType: DataType,
     lambdaFunction: Expression,
     inputData: Expression)
-    (loopValuesMap: mutable.Map[String, String] = mutable.Map.empty[String, String])
   extends Expression with NonSQLExpression {
 
   override def nullable: Boolean = inputData.nullable
@@ -497,14 +484,10 @@ case class MapObjects private(
   override def dataType: DataType =
     ArrayType(lambdaFunction.dataType, containsNull = lambdaFunction.nullable)
 
-  override protected def otherCopyArgs: Seq[AnyRef] = loopValuesMap :: Nil
-
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val elementJavaType = ctx.javaType(loopVarDataType)
-    val loopIsNullAccessor = loopValuesMap.getOrElseUpdate(loopIsNull,
-      ctx.addMutableState("boolean", loopIsNull, ""))
-    val loopValueAccessor = loopValuesMap.getOrElseUpdate(loopValue,
-      ctx.addMutableState(elementJavaType, loopValue, ""))
+    val loopIsNullAccessor = ctx.addMutableState("boolean", loopIsNull, "", inLine = true)
+    val loopValueAccessor = ctx.addMutableState(elementJavaType, loopValue, "", inLine = true)
     val genInputData = inputData.genCode(ctx)
     val genFunction = lambdaFunction.genCode(ctx)
     val dataLength = ctx.freshName("dataLength")
@@ -634,12 +617,12 @@ object ExternalMapToCatalyst {
       keyName,
       keyType,
       keyConverter(
-        LambdaVariable(keyName, "false", mapValuesMap, keyType, false)),
+        LambdaVariable(keyName, "false", keyType, false)),
       valueName,
       valueIsNull,
       valueType,
       valueConverter(
-        LambdaVariable(valueName, valueIsNull, mapValuesMap, valueType, valueNullable)),
+        LambdaVariable(valueName, valueIsNull, valueType, valueNullable)),
       inputMap
     )
   }
@@ -953,7 +936,7 @@ case class InitializeJavaBean(beanInstance: Expression, setters: Map[String, Exp
         $initializeCode
       }
      """
-    ev.copy(code = code, isNull = instanceGen.isNull, value = instanceGen.value)
+    ev.copy(code = code, isNull = instanceGen.isNull, value = javaBeanInstanceAccessor)
   }
 }
 
