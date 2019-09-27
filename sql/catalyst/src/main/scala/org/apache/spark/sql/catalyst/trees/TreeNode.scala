@@ -349,6 +349,19 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
             }
           case other => other
         }.view.force // `mapValues` is lazy and we need to force it to materialize
+        case (m: String, args: Seq[_]) =>
+          val newArgs = args.map {
+            case arg: TreeNode[_] if containsChild(arg) =>
+              val newChild = f(arg.asInstanceOf[BaseType])
+              if (!(newChild fastEquals arg)) {
+                changed = true
+                newChild
+              } else {
+                arg
+              }
+            case other => other
+          }
+          m -> newArgs
         case d: DataType => d // Avoid unpacking Structs
         case args: Stream[_] => args.map(mapChild).force // Force materialization on stream
         case args: Traversable[_] => args.map(mapChild)
